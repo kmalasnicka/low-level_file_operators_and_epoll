@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <poll.h>
+#include <sys/mman.h>
 
 
 #define ERR(source) (perror(source), fprintf(stderr, "%s:%d\n", __FILE__, __LINE__), exit(EXIT_FAILURE))
@@ -50,10 +51,10 @@ int main(int argc, char **argv){
             exit(EXIT_FAILURE);
         }
     }
-    //sprawdzamy czy tower1 jest fifo
-    struct pollfd fds[MAX_TOWERS];
-    char *paths[MAX_TOWERS];
-    int tower_number = argc - 2;
+    
+    struct pollfd fds[MAX_TOWERS]; //przechowuje deskryptory fifos monitorowane przez poll
+    char *paths[MAX_TOWERS]; //sciezki do fifos 
+    int tower_number = argc - 2; //ile grannys mamy
     for(int i = 2; i < argc; i++){
         struct stat st;
         if(stat(argv[i], &st) == -1) {
@@ -67,14 +68,15 @@ int main(int argc, char **argv){
             fprintf(stderr, "there is no granny in %s\n", argv[i]); //nie istnieje plik tower1
             exit(EXIT_FAILURE);
         }
+        //otwieramy fifos w trybie niebkokojacym
         paths[i-2] = argv[i];
         int fd = open(paths[i - 2], O_RDONLY | O_NONBLOCK); //dzieki O_NONBLOCK nie bedziemy czekac na nadawce podczas otwierania pierwszego fifo
         if(fd == -1) ERR("open");
         fds[i-2].fd = fd;
-        fds[i-2].events = POLLIN;
+        fds[i-2].events = POLLIN; //mozliwosc odczytania danych
         fds[i-2].revents = 0;
     }
-
+    //dane z roznych fifo moga przychodzic naprzemiennie wiec musimy miec dla kazdego fifo message, msg_len i too_long
     int active = tower_number;
     char message[MAX_TOWERS][129];
     int msg_len[MAX_TOWERS] = {0};
@@ -82,20 +84,24 @@ int main(int argc, char **argv){
     char buf[256];
     int line_number = 0;
 
-    while(active > 0){
-        int ret = poll(fds, tower_number, 3000); //czekamy 3 sekundy 
-        if (ret < 0) ERR("poll");
-        if(ret == 0){ //no data arrived
+    while(active > 0){ //program dziala dopoki przynajmniej jedna granny nie zakonczyla dyktowania
+        int ret = poll(fds, tower_number, 3000); //poll jednoczesnie monitoruje wszystkie deskryptory, czeka maksymalnie 3 sekundy 
+        if (ret < 0) {
+            if(errno == EINTR) continue; //poll zostalo przerwane sygnalem 
+            ERR("poll");
+        }
+        if(ret == 0){ //minely 3 sekundy i nie ma zdarzenia
             printf("Grannies are pouring more tea…\n");
             continue;
         }
+        //sprawdzanie ktora granny ma dane
         for(int i = 0; i < tower_number; i++){
             if(fds[i].fd == -1) continue;
-            if(fds[i].revents & (POLLIN | POLLHUP)){
-                //dane z roznych fifo moga przychodzic naprzemiennie wiec musimy miec dla kazdego fifo message, msg_len i too_long
+            if(fds[i].revents & (POLLIN | POLLHUP)){ //mozna odczytac dane lub fifo zostalo rozlaczone, wiec sprawdzamy czy pozostaly dane lub nastapil EOF
+                //odczytujemy dostepne dane z konkretnego potoku
                 ssize_t n;
                 while((n = read(fds[i].fd, buf, sizeof(buf))) > 0){ //odczytujemy dane z fifo
-                    for(int j = 0; j < n; j++){
+                    for(int j = 0; j < n; j++){ //przechodzimy po odebranych bajtach
                         if(buf[j] == '\n'){ //kompletna wiadomosc
                             message[i][msg_len[i]] = '\0'; //dodajemy \0
                             if(too_long[i]){
@@ -161,7 +167,7 @@ int main(int argc, char **argv){
                         }
                     }
                 }
-                if(n == 0){ //end of file
+                if(n == 0){ //end of file, zakonczenie granny
                     printf("Granny from %s finished dictating\n", paths[i]);
                     if(close(fds[i].fd) == -1) ERR("close"); //zamykamy fifo
                     fds[i].fd = -1; //usuwamy z monitored poll
@@ -175,8 +181,45 @@ int main(int argc, char **argv){
             }
         }
     }
-        if(close(fd_recipe) == -1){
-            ERR("close");
+    //mapujemy plik recipe do pamieci
+    char *bufer = mmap(NULL, 2048, PROT_READ | PROT_WRITE, MAP_SHARED, fd_recipe, 0);
+    if(bufer == MAP_FAILED) ERR("mmap");
+
+    //zmieniamy raw~berries na raspberries
+    int occurrences = 0;
+    char *found;
+    for(int i = 0; i <= 2048 - 11; i++){
+        if(memcmp(bufer+i, "raw~berries", 11) == 0){ //memcmp porownuje 11 bajtow, 2048 - 11 zeby nei wyjsc poza mapowana pamiec
+            memcpy(bufer + i, "raspberries", 11); //zastepujemy napis nowym
+            occurrences++;
         }
-        return EXIT_SUCCESS;
+    }
+    printf("Princess Joanna's stains cleaned: %d\n", occurrences);
+    //sprawdzanie pustych linii
+    int k = 0;
+    for(int i = 0; i < 32; i++){ //przechodzimy po 32 liniach przepisu
+        char *line = bufer + i * 64; //poczatek koknretnej linii
+        int empty = 1; //zakladamy ze linia jest pusta
+        for(int j = 0; j < 63; j++){
+            if(line[j] != ' '){ //cos nie jest spacja
+                empty = 0;
+                break;
+            }
+        }
+        if(empty == 1){ //linia jest pusta
+            k++;
+        }  else{ //linia nie jest pusta
+            int len = 63; //dlugosc lini
+            while(len > 0 && line[len - 1] == ' ') len--; //dopoki ostatni znak jest spacja to usuwamy te spacje
+            printf("%02d: %.*s\n", i, len, line); //wypisuje maksymalnie len znakow z line 
+        }
+    }
+    if(k > 0) printf("missing %d steps, the cake will collapse!\n", k);
+    if(k == 0) printf("cake ready!\n");
+
+    if(munmap(bufer, 2048)== -1) ERR("munmap"); //zwalnaimy mapowana pamiec
+    if(close(fd_recipe) == -1){
+        ERR("close");
+    }
+    return EXIT_SUCCESS;
     }

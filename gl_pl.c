@@ -57,7 +57,25 @@ int main(int argc, char **argv){
                     printf("Printing headers...\n");
                     break;
                 case 'd':
-                    printf("Dumping the file...\n");
+                    //sprawdzamy rozmiar pliku
+                    printf("Dumping the file...\n"); //printf korzysta z buforowania, dane nie zawsze są od razu wysyłane na stdout
+                    fflush(stdout); //wymusza wypisanie danych oczekujących w buforze stdout
+
+                    struct stat st;
+                    if(fstat(fd_smbox, &st) == -1) ERR("fstat");
+                    size_t size = st.st_size;
+                    if(size == 0) break;
+
+                    char *data = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd_smbox, 0);
+                    if(data == MAP_FAILED) ERR("mmap");
+
+                    size_t written = 0;
+                    while(written < size){
+                        ssize_t n = write(STDOUT_FILENO, data + written, size - written);
+                        if(n == -1 || n == 0) ERR("write");
+                        written+=n;
+                    }
+                    if(munmap(data, size) == -1) ERR("munmap");
                     break;
                 case 'q':
                     running = 0;

@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-// #include <sys/timerfd.h>
+#include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -32,6 +32,7 @@
  */
 int test_write(const char* path, const unsigned char* data, size_t size, size_t block_size)
 {
+    //write - writes btes from a buffer to a file, returns number of bytes written or -1 on error
     /* STAGE1: create the file and write size bytes of data with write(), block_size bytes at a time.
      * size does not have to be divisible by block_size, so the last block can be shorter. */
     double start = now(CLOCK_MONOTONIC);
@@ -65,6 +66,7 @@ int test_write(const char* path, const unsigned char* data, size_t size, size_t 
 
 int test_read(const char* path, size_t size, size_t block_size)
 {
+    //Reads bytes from a file into a buffer. Returns bytes read, 0 at EOF, or -1 on error.
     double start = now(CLOCK_MONOTONIC);
     /* STAGE1: read the file with read(), block_size bytes at a time, until end of file. */
     int fd = open(path, O_RDONLY);
@@ -103,6 +105,7 @@ int test_read(const char* path, size_t size, size_t block_size)
 
 int test_fwrite(const char* path, const unsigned char* data, size_t size, size_t block_size)
 {
+    //Writes multiple elements from a buffer to a file.
     double start = now(CLOCK_MONOTONIC);
     /* STAGE2: like test_write, but with fwrite(). */
     FILE *file = fopen(path, "w");
@@ -136,6 +139,7 @@ int test_fwrite(const char* path, const unsigned char* data, size_t size, size_t
 
 int test_fread(const char* path, size_t size, size_t block_size)
 {
+    //Reads multiple elements from a file into a buffer.
     double start = now(CLOCK_MONOTONIC);
     /* STAGE2: like test_read, but with fread(). */
     FILE *file = fopen(path, "r");
@@ -170,6 +174,7 @@ int test_fread(const char* path, size_t size, size_t block_size)
 
 int test_fputc(const char* path, const unsigned char* data, size_t size)
 {
+    //Writes one character (byte) to a file.
     double start = now(CLOCK_MONOTONIC);
     /* STAGE2: create the file and write size bytes of data with fputc(), one character at a time. */
     FILE *file = fopen(path, "w");
@@ -199,6 +204,7 @@ int test_fputc(const char* path, const unsigned char* data, size_t size)
 
 int test_fgetc(const char* path, size_t size)
 {
+    //Reads one character (byte) from a file.
     double start = now(CLOCK_MONOTONIC);
     /* STAGE2: read the file with fgetc(), one character at a time, until end of file. */
     FILE *file = fopen(path, "r");
@@ -230,6 +236,7 @@ int test_fgetc(const char* path, size_t size)
 
 int test_fscanf(const char* path, size_t size)
 {
+    //Reads formatted input from a file, e.g. %c for one character.
     double start = now(CLOCK_MONOTONIC);
     /* STAGE2: read the file with fscanf(), one character at a time, until end of file. */
     FILE *file = fopen(path, "r");
@@ -277,7 +284,7 @@ int test_wait(enum wait_mode mode)
 {
     // initialization - boilerplate
     const char* name;
-    int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK); //creates a timer and returns a file descriptor, TFD_NONBLOCK makes read nonblocking
     if (fd == -1)
     {
         perror("timerfd_create");
@@ -313,24 +320,103 @@ int test_wait(enum wait_mode mode)
     // where `expirations` is read from the timerfd, until stats.count reaches EXPIRATION_COUNT
     switch (mode)
     {
-        case WAIT_BUSY:
+        case WAIT_BUSY: //repeated reads, high cpu usage
         {
             name = "busy";
             // STAGE3: implement busy waiting here
+            while(stats.count < EXPIRATION_COUNT){ //timer wygasa wielokrotnie, a zadanie wymaga zebrania EXPIRATION_COUNT wygaśnięć
+                uint64_t expirations;
+                ssize_t n = read(fd, &expirations, sizeof(expirations));
+                if(n == -1 && errno == EAGAIN){
+                    continue;
+                } else if(n == -1) {
+                    perror("read");
+                    close(fd);
+                    return -1;
+                }
+                if(n != sizeof(expirations)){
+                    fprintf(stderr, "Invalid timer read\n");
+                    close(fd);
+                    return -1;
+                }
+                record_expirations(&stats, expirations, now(CLOCK_MONOTONIC));
+            }
+            result = 0;
             break;
         }
-        case WAIT_SLEEP:
+        case WAIT_SLEEP: //read + sleep, lower cpu usage
         {
             name = "sleep";
             // STAGE3: implement busy waiting with sleep here
+            while(stats.count < EXPIRATION_COUNT){
+                uint64_t expirations;
+                ssize_t n = read(fd, &expirations, sizeof(expirations));
+                if (n == -1 && errno == EAGAIN) {
+                    usleep(1000);  // sleep for 1 millisecond
+                    continue;
+                } else if(n == -1) {
+                    perror("read");
+                    close(fd);
+                    return -1;
+                }
+                if(n != sizeof(expirations)){
+                    fprintf(stderr, "Invalid timer read\n");
+                    close(fd);
+                    return -1;
+                }
+                record_expirations(&stats, expirations, now(CLOCK_MONOTONIC));
+            }
+            result = 0;
             break;
         }
-        case WAIT_POLL:
+         case WAIT_POLL: //wykonuje poll(), który czeka na zdarzenie, i dopiero wtedy read().
         {
-            name = "poll";
-            // STAGE3: implement waiting with poll here
-            break;
+        name = "poll";
+        // STAGE3: implement waiting with poll here
+        //struktura pollfd, trzymajaca deskryptor, zdarzenia na ktore chcemy czekac i zdarzenia ktore wystapily
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN; //POLLIN czyli odczyt danych
+        while(stats.count < EXPIRATION_COUNT){
+            int ready = poll(&pfd, 1, -1); //wywolujemy poll, 1 - l obserwowanych desk, -1 nieskonczony timeout 
+            if(ready < 0){ //blad
+                if(errno == EINTR) continue; //poll zostalo przerwane sygnalem 
+                perror("poll");
+                close(fd);
+                return -1;
+            } 
+            if(ready == 0){ //timeout
+                continue;
+            }
+            //co najmniej jeden deskryptor zgłosił zdarzenie.
+            if(pfd.revents & POLLIN){ 
+//sprawdzamy czy w revents ustawiony jest POLLIN, czyli ze deskryptor jest gotowy do odczytu
+//odczytujemy wygasniecie timera         
+                uint64_t expirations;
+                ssize_t n = read(fd, &expirations, sizeof(expirations));
+                if (n == -1 && errno == EAGAIN) continue;
+
+                if (n != sizeof(expirations)) {
+                    if (n == -1)
+                        perror("read");
+                    else
+                        fprintf(stderr, "Invalid timer read\n");
+
+                    close(fd);
+                    return -1;
+                }
+                //aktualizacja statystyk, liczby wygasniec i opoznienia
+                record_expirations(&stats, expirations, now(CLOCK_MONOTONIC));
+            } else {
+                fprintf(stderr, "Unexpected poll event\n");
+                close(fd);
+                return -1;
+            }
         }
+
+        result = 0;
+        break;
+    }
         default:
             return -1;
     }

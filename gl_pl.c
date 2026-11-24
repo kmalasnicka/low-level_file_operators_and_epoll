@@ -243,3 +243,84 @@ int main(int argc, char **argv){
     if(close(fd_smbox)== -1) ERR("close");
     exit(EXIT_SUCCESS);
 }
+
+//readv- odczytanie dlugosci 
+
+// unsigned char header_size;
+// unsigned char message_size;
+// struct iovec iov[2];
+// iov[0].iov_base = &header_size;
+// iov[0].iov_len = 1;
+// iov[1].iov_base = &message_size;
+// iov[1].iov_len = 1;
+// ssize_t n = readv(fd, iov, 2);
+
+//poprawnosc odczytu:
+// if(n == -1) ERR("readv");
+// if(n == 0){
+//     // koniec pliku
+// }
+// if(n != 2){
+//     fprintf(stderr, "Invalid file\n");
+//     exit(EXIT_FAILURE);
+// }
+
+//odczytanie naglowka i tresci
+// char header[255];
+// char message[255];
+
+// iov[0].iov_base = header;
+// iov[0].iov_len = header_size;
+// iov[1].iov_base = message;
+// iov[1].iov_len = message_size;
+// n = readv(fd, iov, 2);
+// if(n == -1) ERR("readv");
+// if(n != header_size + message_size){
+//     fprintf(stderr, "Invalid file\n");
+//     exit(EXIT_FAILURE);
+// }
+
+
+//np ksiazki:
+// #include <stdint.h>
+// #include <sys/uio.h>
+
+// uint32_t id;
+// char title[64];
+// char author[32];
+// uint32_t pages;
+// struct iovec iov[4];
+// iov[0].iov_base = &id;
+// iov[0].iov_len = sizeof(id);
+// iov[1].iov_base = title;
+// iov[1].iov_len = sizeof(title);
+// iov[2].iov_base = author;
+// iov[2].iov_len = sizeof(author);
+// iov[3].iov_base = &pages;
+// iov[3].iov_len = sizeof(pages);
+// ssize_t n = readv(fd, iov, 4);
+
+//poczatek ostatniego recordu lseek(fd, -104, SEEK_END);
+//akturalna pozycja o 104 w przod lseek(fd, 104, SEEK_CUR);
+//wracamy na poczatek pliku lseek(fd, 104, SEEK_CUR);
+//lseek(fd, selected_message * 104, SEEK_SET); poczatek wybranego recordu
+
+//synchronizacja zmian: msync(data, size, MS_SYNC);
+
+//zmiana flag:
+//int flags = fcntl(STDIN_FILENO, F_GETFL);
+// if(flags == -1) ERR("fcntl");
+// if(fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) == -1) ERR("fcntl");
+
+//poll #include <poll.h>
+// struct pollfd fds[3];
+// fds[0].fd = STDIN_FILENO;
+// fds[0].events = POLLIN;
+// fds[1].fd = fd1;
+// fds[1].events = POLLIN;
+// fds[2].fd = fd2;
+// fds[2].events = POLLIN;
+// int ready = poll(fds, 3, -1);
+
+//blocking - domyslny, read czeka na dane
+//nonblocking - jak nie ma danych to read zwraca -1 i errno na EAGAIN lub EWOULDBLOCK

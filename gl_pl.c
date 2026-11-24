@@ -7,9 +7,11 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
+#include <poll.h>
 
 #define ERR(source) (perror(source), fprintf(stderr, "%s:%d\n", __FILE__, __LINE__), exit(EXIT_FAILURE))
 #define BATCH_BYTES 64
+#define MAX_FIFOS 5
 
 void usage(int argc, char **argv){
     fprintf(stderr, "usage: %s smbox_file [fifo...]", argv[0]);
@@ -67,8 +69,22 @@ void print_message(unsigned char *data, size_t *offsets, int selected_message){
 }
 
 int main(int argc, char **argv){
-    if(argc < 2){
+    if(argc < 2 || argc > MAX_FIFOS + 2){
         usage(argc, argv);
+    }
+
+    int fd_count = argc - 1;
+    struct pollfd fds[fd_count];
+
+    fds[0].fd = STDIN_FILENO;
+    fds[0].events = POLLIN;
+    fds[0].revents = 0;
+
+    for(int i = 2; i < argc; i++){
+        fds[i - 1].fd = open(argv[i], O_RDONLY | O_NONBLOCK);
+        if(fds[i - 1].fd == -1) ERR("open fifo");
+        fds[i - 1].events = POLLIN;
+        fds[i - 1].revents = 0;
     }
     //otwieramy plik 
     int fd_smbox = open(argv[1], O_RDONLY);
@@ -138,60 +154,89 @@ int main(int argc, char **argv){
     }
 
     while(running){
-        //odczytujemy koemndy
-        ssize_t n = read(STDIN_FILENO, commands, BATCH_BYTES);
-        //brak danych:
-        if(n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            usleep(100000);
-            continue;
-        }
-        if(n == -1 && errno == EINTR) continue; //sygnal
-        if(n == -1) ERR("read"); //blad
-        if(n == 0) break; //eof
-        for(ssize_t i = 0; i < n; i++){ //iterujemy sie po kazdym znaku z stdin
-            switch(commands[i]){
-                case 'w':
-                    if(selected_message > 0){
-                        selected_message--;
-                    }
-                    print_headers(data, offsets, message_count, selected_message);
-                    break;
-                case 's':
-                    if(selected_message < message_count - 1){
-                        selected_message++;
-                    }
-                    print_headers(data, offsets, message_count, selected_message);
-                    break;
-                case 'm': //aktualna wiadomosc
-                    print_message(data, offsets, selected_message);
-                    break;
-                case 'h': //wszystkie naglowki
-                    print_headers(data, offsets, message_count, selected_message);
-                    break;
-                case 'd':
-                    printf("Dumping the file...\n"); //printf korzysta z buforowania, dane nie zawsze są od razu wysyłane na stdout
-                    fflush(stdout); //wymusza wypisanie danych oczekujących w buforze stdout
+        if(fd_count == 1 && fds[0].fd == -1) break;
+        int ready = poll(fds, fd_count, -1);
+        if(ready == -1 && errno == EINTR) continue;
+        if(ready == -1) ERR("poll");
 
-                    size_t written = 0;
-                    while(written < size){
-                        ssize_t n = write(STDOUT_FILENO, data + written, size - written);
-                        if(n == -1 && errno == EINTR) continue;
-                        if(n <= 0) ERR("write");
-                        written+=n;
-                    }
-                    break;
-                case 'q':
-                    running = 0;
-                    break;
-                case '\n': 
-                    break;
-                default: 
-                    printf("Invalid input\n");
-                    fflush(stdout);
-                    break;
+        for(int j = 0; j < fd_count && running; j++){
+            if(fds[j].revents & (POLLERR | POLLNVAL)){
+                fprintf(stderr, "Invalid input descriptor\n");
+                exit(EXIT_FAILURE);
             }
-            if(!running) break;
+            if(fds[j].revents & POLLIN){
+                ssize_t n = read(fds[j].fd, commands, BATCH_BYTES);
+                if(n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+                if(n == -1 && errno == EINTR) continue; //sygnal
+                if(n == -1) ERR("read"); //blad
+                if(n == 0){ //eof
+                    if(j == 0){ //stdin
+                        fds[j].fd = -1;//juz nie odczytujemy
+                    }
+                    continue;
+                }
+
+                for(ssize_t i = 0; i < n; i++){ //iterujemy sie po kazdym znaku z stdin
+                    switch(commands[i]){
+                        case 'w':
+                            if(selected_message > 0){
+                                selected_message--;
+                            }
+                            print_headers(data, offsets, message_count, selected_message);
+                            break;
+                        case 's':
+                            if(selected_message < message_count - 1){
+                                selected_message++;
+                            }
+                            print_headers(data, offsets, message_count, selected_message);
+                            break;
+                        case 'm': //aktualna wiadomosc
+                            print_message(data, offsets, selected_message);
+                            break;
+                        case 'h': //wszystkie naglowki
+                            print_headers(data, offsets, message_count, selected_message);
+                            break;
+                        case 'd':
+                            printf("Dumping the file...\n"); //printf korzysta z buforowania, dane nie zawsze są od razu wysyłane na stdout
+                            fflush(stdout); //wymusza wypisanie danych oczekujących w buforze stdout
+
+                            size_t written = 0;
+                            while(written < size){
+                                ssize_t n = write(STDOUT_FILENO, data + written, size - written);
+                                if(n == -1 && errno == EINTR) continue;
+                                if(n <= 0) ERR("write");
+                                written+=n;
+                            }
+                            break;
+                        case 'q':
+                            running = 0;
+                            break;
+                        case '\n': 
+                            break;
+                        default: 
+                            printf("Invalid input\n");
+                            fflush(stdout);
+                            break;
+                    }
+                    if(!running) break;
+                }
+            } else if(fds[j].revents & POLLHUP){ //proces zapisujacy do fifo zamknal sie
+                if(j > 0){ //sprawdzamy czy deskryptor to fifo
+                    if(close(fds[j].fd) == -1) ERR("close fifo"); //zamykamy stary deskryptor
+                    fds[j].fd = open(argv[j + 1], O_RDONLY | O_NONBLOCK); //ponownie otwieramy to samo fifo i nie czekamy na podłączenie procesu zapisującego(O_NONBLOCK)
+                    if(fds[j].fd == -1)  ERR("open fifo");
+                    fds[j].revents = 0; //usuwamy info o poprzednim zdarzeniu POLLHUP
+                }
+                else{ //to jest stdin
+                    fds[j].fd = -1; //ignorujemy w poll
+                }
+            }
         }
+
+    }
+
+    for(int j = 1; j < fd_count; j++){ //zamykamy fifo
+        if(close(fds[j].fd) == -1) ERR("close fifo");
     }
     free(offsets);
     if(munmap(data, size) == -1) ERR("munmap");

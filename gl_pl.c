@@ -324,3 +324,39 @@ int main(int argc, char **argv){
 
 //blocking - domyslny, read czeka na dane
 //nonblocking - jak nie ma danych to read zwraca -1 i errno na EAGAIN lub EWOULDBLOCK
+
+//poll
+// while(running){
+
+//     int ready = poll(fds, fd_count, -1);
+
+//     if(ready == -1 && errno == EINTR)
+//         continue;
+
+//     if(ready == -1)
+//         ERR("poll");
+
+//     for(int j = 0; j < fd_count && running; j++){
+
+//         if(fds[j].revents & POLLIN){
+
+//             ssize_t n = read(fds[j].fd, buffer, 64);
+
+//             if(n == -1 && errno == EINTR)
+//                 continue;
+
+//             if(n == -1 && (errno == EAGAIN ||
+//                            errno == EWOULDBLOCK))
+//                 continue;
+
+//             if(n == -1)
+//                 ERR("read");
+
+//             // obsługa EOF i odczytanych danych
+//         }
+//         else if(fds[j].revents & POLLHUP){
+
+//             // obsługa rozłączenia
+//         }
+//     }
+// }
